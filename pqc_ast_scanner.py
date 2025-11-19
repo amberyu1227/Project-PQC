@@ -153,7 +153,7 @@ class PQC_AST_Visitor(ast.NodeVisitor):
 
 def scan_python(filepath):
     findings_list = []
-    with open(filepath, 'r') as f:
+    with open(filepath, 'r', encoding='utf-8') as f:
         code = f.read()
     tree = ast.parse(code, filename=filepath) 
     visitor = PQC_AST_Visitor(filepath, findings_list)
@@ -164,7 +164,7 @@ def scan_python(filepath):
 # --- Java 掃描核心 ---
 def scan_java(filepath):
     findings_list = []
-    with open(filepath, 'r') as f:
+    with open(filepath, 'r', encoding='utf-8') as f:
         code = f.read()
 
     try:
