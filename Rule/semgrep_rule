@@ -1,0 +1,516 @@
+#========
+#python
+#========
+
+#警告潛在的空 AES 加密金鑰。使用空金鑰會導致加密強度極低，攻擊者可以輕鬆解密敏感資料。
+rules:
+- id: empty-aes-key
+  message: >-
+    Potential empty AES encryption key. Using an empty key in AES encryption
+    can result in weak encryption and may allow attackers to easily decrypt sensitive
+    data. Ensure that a strong, non-empty key is used for AES encryption.
+  patterns:
+  - pattern: AES.new("",...)
+  languages:
+  - python
+  severity: WARNING
+  metadata:
+    cwe:
+    - 'CWE-327: Use of a Broken or Risky Cryptographic Algorithm'
+    - 'CWE-310: Cryptographic Issues'
+    references:
+    - https://cwe.mitre.org/data/definitions/327.html
+    - https://cwe.mitre.org/data/definitions/310.html
+    category: security
+    subcategory:
+    - vuln
+    likelihood: MEDIUM
+    impact: HIGH
+    confidence: MEDIUM
+    owasp: A6:2017 misconfiguration
+    functional-categories:
+    - crypto::search::key-length::pycrypto
+    - crypto::search::key-length::pycryptodome
+    technology:
+    - python
+    - pycrypto
+    - pycryptodome
+#偵測並警告使用 ARC4，並建議替換為更強大的對稱加密，如 AES
+rules:
+- id: insecure-cipher-algorithm-arc4
+  message: >-
+    ARC4 (Alleged RC4) is a stream cipher with serious weaknesses in its initial stream output. 
+    Its use is strongly discouraged. ARC4 does not use mode constructions.
+    Use a strong symmetric cipher such as EAS instead.
+    With the `cryptography` package it is recommended to use the `Fernet` which is a secure implementation
+    of AES in CBC mode with a 128-bit key. 
+    Alternatively, keep using the `Cipher` class from the hazmat primitives but use the AES algorithm instead.
+  metadata:
+    source-rule-url: https://github.com/PyCQA/bandit/blob/d5f8fa0d89d7b11442fc6ec80ca42953974354c8/bandit/blacklists/calls.py#L98
+    cwe:
+    - 'CWE-327: Use of a Broken or Risky Cryptographic Algorithm'
+    owasp:
+    - A03:2017 - Sensitive Data Exposure
+    - A02:2021 - Cryptographic Failures
+    bandit-code: B304
+    references:
+    - https://cryptography.io/en/latest/hazmat/primitives/symmetric-encryption/#weak-ciphers
+    category: security
+    technology:
+    - cryptography
+    subcategory:
+    - vuln
+    likelihood: MEDIUM
+    impact: MEDIUM
+    confidence: MEDIUM
+    functional-categories:
+    - crypto::search::symmetric-algorithm::cryptography
+  severity: WARNING
+  languages:
+  - python
+  patterns:
+    - pattern: cryptography.hazmat.primitives.ciphers.algorithms.$ARC4($KEY)
+    - pattern-inside: cryptography.hazmat.primitives.ciphers.Cipher(...)
+    - metavariable-regex:
+        metavariable: $ARC4
+        regex: ^(ARC4)$
+    - focus-metavariable: $ARC4
+  fix: AES
+#警告使用 Blowfish。該演算法在使用弱金鑰時易受攻擊
+rules:
+- id: insecure-cipher-algorithm-blowfish
+  message: >-
+    Blowfish is a block cipher developed by Bruce Schneier. It is known to be susceptible to attacks when using weak keys. 
+    The author has recommended that users of Blowfish move to newer algorithms such as AES.
+    With the `cryptography` package it is recommended to use `Fernet` which is a secure implementation
+    of AES in CBC mode with a 128-bit key. 
+    Alternatively, keep using the `Cipher` class from the hazmat primitives but use the AES algorithm instead.
+  metadata:
+    source-rule-url: https://github.com/PyCQA/bandit/blob/d5f8fa0d89d7b11442fc6ec80ca42953974354c8/bandit/blacklists/calls.py#L98
+    cwe:
+    - 'CWE-327: Use of a Broken or Risky Cryptographic Algorithm'
+    owasp:
+    - A03:2017 - Sensitive Data Exposure
+    - A02:2021 - Cryptographic Failures
+    bandit-code: B304
+    references:
+    - https://cryptography.io/en/latest/hazmat/primitives/symmetric-encryption/#weak-ciphers
+    - https://tools.ietf.org/html/rfc5469
+    category: security
+    technology:
+    - cryptography
+    subcategory:
+    - vuln
+    likelihood: MEDIUM
+    impact: MEDIUM
+    confidence: MEDIUM
+    functional-categories:
+    - crypto::search::symmetric-algorithm::cryptography
+  severity: WARNING
+  languages:
+  - python
+  patterns: 
+    - pattern: cryptography.hazmat.primitives.ciphers.algorithms.$BLOWFISH($KEY)
+    - metavariable-regex:
+        metavariable: $BLOWFISH
+        regex: ^(Blowfish)$
+    - focus-metavariable: $BLOWFISH
+  fix: AES
+#警告使用 IDEA。它是一個 1991 年創建的區塊加密法，對弱金鑰易受攻擊
+rules:
+- id: insecure-cipher-algorithm-idea
+  message: >-
+    IDEA (International Data Encryption Algorithm) is a block cipher created in 1991. 
+    It is an optional component of the OpenPGP standard. This cipher is susceptible to attacks when using weak keys. 
+    It is recommended that you do not use this cipher for new applications.
+    Use a strong symmetric cipher such as EAS instead.
+    With the `cryptography` package it is recommended to use `Fernet` which is a secure implementation
+    of AES in CBC mode with a 128-bit key. 
+    Alternatively, keep using the `Cipher` class from the hazmat primitives but use the AES algorithm instead.
+  metadata:
+    source-rule-url: https://github.com/PyCQA/bandit/blob/d5f8fa0d89d7b11442fc6ec80ca42953974354c8/bandit/blacklists/calls.py#L98
+    cwe:
+    - 'CWE-327: Use of a Broken or Risky Cryptographic Algorithm'
+    owasp:
+    - A03:2017 - Sensitive Data Exposure
+    - A02:2021 - Cryptographic Failures
+    bandit-code: B304
+    references:
+    - https://tools.ietf.org/html/rfc5469
+    - https://cryptography.io/en/latest/hazmat/primitives/symmetric-encryption/#cryptography.hazmat.primitives.ciphers.algorithms.IDEA
+    category: security
+    technology:
+    - cryptography
+    subcategory:
+    - vuln
+    likelihood: MEDIUM
+    impact: MEDIUM
+    confidence: MEDIUM
+    functional-categories:
+    - crypto::search::symmetric-algorithm::cryptography
+  severity: WARNING
+  languages:
+  - python
+  patterns:
+    - pattern: cryptography.hazmat.primitives.ciphers.algorithms.$IDEA($KEY)
+    - metavariable-regex:
+        metavariable: $IDEA
+        regex: ^(IDEA)$
+    - focus-metavariable: $IDEA
+  fix: AES
+#警告使用 ECB (Electronic Code Book) 模式。由於它會對相同的明文區塊產生相同的密文區塊，因此會在輸出中留下明顯的模式。
+rules:
+- id: insecure-cipher-mode-ecb
+  message: >-
+    ECB (Electronic Code Book) is the simplest mode of operation for block ciphers. 
+    Each block of data is encrypted in the same way. 
+    This means identical plaintext blocks will always result in identical ciphertext blocks, which can leave significant patterns in the output.
+    Use a different, cryptographically strong mode instead, such as GCM.
+  metadata:
+    source-rule-url: https://github.com/PyCQA/bandit/blob/d5f8fa0d89d7b11442fc6ec80ca42953974354c8/bandit/blacklists/calls.py#L101
+    cwe:
+    - 'CWE-327: Use of a Broken or Risky Cryptographic Algorithm'
+    owasp:
+    - A03:2017 - Sensitive Data Exposure
+    - A02:2021 - Cryptographic Failures
+    bandit-code: B305
+    references:
+    - https://cryptography.io/en/latest/hazmat/primitives/symmetric-encryption/#insecure-modes
+    - https://crypto.stackexchange.com/questions/20941/why-shouldnt-i-use-ecb-encryption
+    category: security
+    technology:
+    - cryptography
+    subcategory:
+    - audit
+    likelihood: LOW
+    impact: LOW
+    confidence: MEDIUM
+    functional-categories:
+    - crypto::search::mode::cryptography
+  severity: WARNING
+  languages:
+  - python
+  pattern: cryptography.hazmat.primitives.ciphers.modes.ECB($IV)
+  fix: cryptography.hazmat.primitives.ciphers.modes.GCM($IV)
+#偵測到 MD5 雜湊演算法，它被認為是不安全的。MD5 不具備碰撞抵抗性 (collision resistant)，因此不適用於作為密碼學簽章。
+rules:
+- id: insecure-hash-algorithm-md5
+  message: >-
+    Detected MD5 hash algorithm which is considered insecure. MD5 is not
+    collision resistant and is therefore not suitable as a cryptographic
+    signature. Use SHA256 or SHA3 instead.
+  metadata:
+    source-rule-url: https://github.com/PyCQA/bandit/blob/d5f8fa0d89d7b11442fc6ec80ca42953974354c8/bandit/blacklists/calls.py#L59
+    cwe:
+    - 'CWE-327: Use of a Broken or Risky Cryptographic Algorithm'
+    owasp:
+    - A03:2017 - Sensitive Data Exposure
+    - A02:2021 - Cryptographic Failures
+    bandit-code: B303
+    references:
+    - https://cryptography.io/en/latest/hazmat/primitives/cryptographic-hashes/#md5
+    - https://www.schneier.com/blog/archives/2012/10/when_will_we_se.html
+    - https://www.trendmicro.com/vinfo/us/security/news/vulnerabilities-and-exploits/sha-1-collision-signals-the-end-of-the-algorithm-s-viability
+    - http://2012.sharcs.org/slides/stevens.pdf
+    - https://pycryptodome.readthedocs.io/en/latest/src/hash/sha3_256.html
+    category: security
+    technology:
+    - cryptography
+    subcategory:
+    - vuln
+    likelihood: LOW
+    impact: MEDIUM
+    confidence: MEDIUM
+    functional-categories:
+    - crypto::search::symmetric-algorithm::cryptography
+  severity: WARNING
+  languages:
+  - python
+  patterns:
+    - pattern: cryptography.hazmat.primitives.hashes.$MD5()
+    - metavariable-regex:
+        metavariable: $MD5
+        regex: ^(MD5)$
+    - focus-metavariable: $MD5
+  fix: SHA256
+#偵測到 SHA1 雜湊演算法，它被認為是不安全的。SHA1 不具備碰撞抵抗性，因此不適用於密碼學簽章。
+rules:
+- id: insecure-hash-algorithm-sha1
+  patterns: 
+    - pattern: cryptography.hazmat.primitives.hashes.$SHA(...)
+    - metavariable-pattern:
+        metavariable: $SHA
+        pattern: |
+          SHA1
+    - focus-metavariable: $SHA
+  fix: |
+    SHA256
+  message: >-
+    Detected SHA1 hash algorithm which is considered insecure. SHA1 is not
+    collision resistant and is therefore not suitable as a cryptographic
+    signature. Use SHA256 or SHA3 instead.
+  metadata:
+    source-rule-url: https://github.com/PyCQA/bandit/blob/d5f8fa0d89d7b11442fc6ec80ca42953974354c8/bandit/blacklists/calls.py#L59
+    cwe:
+    - 'CWE-327: Use of a Broken or Risky Cryptographic Algorithm'
+    owasp:
+    - A03:2017 - Sensitive Data Exposure
+    - A02:2021 - Cryptographic Failures
+    bandit-code: B303
+    references:
+    - https://cryptography.io/en/latest/hazmat/primitives/cryptographic-hashes/#sha-1
+    - https://www.schneier.com/blog/archives/2012/10/when_will_we_se.html
+    - https://www.trendmicro.com/vinfo/us/security/news/vulnerabilities-and-exploits/sha-1-collision-signals-the-end-of-the-algorithm-s-viability
+    - http://2012.sharcs.org/slides/stevens.pdf
+    - https://pycryptodome.readthedocs.io/en/latest/src/hash/sha3_256.html
+    category: security
+    technology:
+    - cryptography
+    subcategory:
+    - vuln
+    likelihood: LOW
+    impact: MEDIUM
+    confidence: MEDIUM
+    functional-categories:
+    - crypto::search::symmetric-algorithm::cryptography
+  severity: WARNING
+  languages:[python]
+#偵測到 DSA 金鑰尺寸不足。NIST (美國國家標準與技術研究院) 推薦的金鑰尺寸應為 2048 位元或更高。
+rules:
+- id: insufficient-dsa-key-size
+  patterns:
+  - pattern-either:
+    - pattern: cryptography.hazmat.primitives.asymmetric.dsa.generate_private_key(..., key_size=$SIZE,
+        ...)
+    - pattern: cryptography.hazmat.primitives.asymmetric.dsa.generate_private_key($SIZE, ...)
+  - metavariable-comparison:
+      metavariable: $SIZE
+      comparison: $SIZE < 2048
+  - focus-metavariable: $SIZE
+  fix: |
+      2048
+  message: >-
+    Detected an insufficient key size for DSA. NIST recommends
+    a key size of 2048 or higher.
+  metadata:
+    cwe:
+    - 'CWE-326: Inadequate Encryption Strength'
+    owasp:
+    - A03:2017 - Sensitive Data Exposure
+    - A02:2021 - Cryptographic Failures
+    source-rule-url: https://github.com/PyCQA/bandit/blob/b1411bfb43795d3ffd268bef17a839dee954c2b1/bandit/plugins/weak_cryptographic_key.py
+    references:
+    - https://www.cosic.esat.kuleuven.be/ecrypt/ecrypt2/documents/D.SPA.20.pdf
+    - https://cryptography.io/en/latest/hazmat/primitives/asymmetric/dsa/
+    - https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-57Pt3r1.pdf
+    category: security
+    technology:
+    - cryptography
+    subcategory:
+    - vuln
+    likelihood: MEDIUM
+    impact: MEDIUM
+    confidence: MEDIUM
+    functional-categories:
+    - crypto::search::key-length::cryptography
+  languages: [python]
+  severity: WARNING
+#偵測到 EC 曲線尺寸不足。NIST 推薦的金鑰尺寸應為 224 位元或更高。
+rules:
+- id: insufficient-ec-key-size
+  patterns:
+    - pattern-inside: cryptography.hazmat.primitives.asymmetric.ec.generate_private_key(...)
+    - pattern: cryptography.hazmat.primitives.asymmetric.ec.$SIZE
+    - metavariable-pattern:
+        metavariable: $SIZE
+        pattern-either:
+           - pattern: SECP192R1
+           - pattern: SECT163K1
+           - pattern: SECT163R2
+    - focus-metavariable: $SIZE
+  fix: |
+    SECP256R1
+  message: >-
+    Detected an insufficient curve size for EC. NIST recommends
+    a key size of 224 or higher. For example, use 'ec.SECP256R1'.
+  metadata:
+    cwe:
+    - 'CWE-326: Inadequate Encryption Strength'
+    owasp:
+    - A03:2017 - Sensitive Data Exposure
+    - A02:2021 - Cryptographic Failures
+    source-rule-url: https://github.com/PyCQA/bandit/blob/b1411bfb43795d3ffd268bef17a839dee954c2b1/bandit/plugins/weak_cryptographic_key.py
+    references:
+    - https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-57Pt3r1.pdf
+    - https://cryptography.io/en/latest/hazmat/primitives/asymmetric/ec/#elliptic-curves
+    category: security
+    technology:
+    - cryptography
+    subcategory:
+    - audit
+    likelihood: MEDIUM
+    impact: MEDIUM
+    confidence: MEDIUM
+    functional-categories:
+    - crypto::search::key-length::cryptography
+  languages: [python]
+  severity: WARNING
+#偵測到 RSA 金鑰尺寸不足。NIST 推薦的金鑰尺寸應為 2048 位元或更高。
+rules:
+- id: insufficient-rsa-key-size
+  patterns:
+  - pattern-either:
+    - pattern: cryptography.hazmat.primitives.asymmetric.rsa.generate_private_key(..., key_size=$SIZE,
+        ...)
+    - pattern: cryptography.hazmat.primitives.asymmetric.rsa.generate_private_key($EXP, $SIZE, ...)
+  - metavariable-comparison:
+      metavariable: $SIZE
+      comparison: $SIZE < 2048
+  - focus-metavariable: $SIZE
+  fix : |
+      2048
+  message: >-
+    Detected an insufficient key size for RSA. NIST recommends
+    a key size of 2048 or higher.
+  metadata:
+    cwe:
+    - 'CWE-326: Inadequate Encryption Strength'
+    owasp:
+    - A03:2017 - Sensitive Data Exposure
+    - A02:2021 - Cryptographic Failures
+    source-rule-url: https://github.com/PyCQA/bandit/blob/b1411bfb43795d3ffd268bef17a839dee954c2b1/bandit/plugins/weak_cryptographic_key.py
+    references:
+    - https://cryptography.io/en/latest/hazmat/primitives/asymmetric/rsa/
+    - https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-57Pt3r1.pdf
+    category: security
+    technology:
+    - cryptography
+    subcategory:
+    - audit
+    likelihood: MEDIUM
+    impact: MEDIUM
+    confidence: MEDIUM
+    functional-categories:
+    - crypto::search::key-length::cryptography
+  languages: [python]
+  severity: WARNING
+#偵測到 MD2 雜湊演算法。它被認為是不安全的，並且不具備碰撞抵抗性
+rules:
+- id: insecure-hash-algorithm-md2
+  message: >-
+    Detected MD2 hash algorithm which is considered insecure. MD2 is not
+    collision resistant and is therefore not suitable as a cryptographic
+    signature. 
+    Use a modern hash algorithm from the SHA-2, SHA-3, or BLAKE2 family instead.
+  metadata:
+    source-rule-url: https://github.com/PyCQA/bandit/blob/d5f8fa0d89d7b11442fc6ec80ca42953974354c8/bandit/blacklists/calls.py#L59
+    cwe:
+    - 'CWE-327: Use of a Broken or Risky Cryptographic Algorithm'
+    owasp:
+    - A03:2017 - Sensitive Data Exposure
+    - A02:2021 - Cryptographic Failures
+    references:
+    - https://www.pycryptodome.org/src/hash/hash#modern-hash-algorithms
+    - https://www.schneier.com/blog/archives/2012/10/when_will_we_se.html
+    - https://www.trendmicro.com/vinfo/us/security/news/vulnerabilities-and-exploits/sha-1-collision-signals-the-end-of-the-algorithm-s-viability
+    - http://2012.sharcs.org/slides/stevens.pdf
+    - https://pycryptodome.readthedocs.io/en/latest/src/hash/sha3_256.html
+    category: security
+    technology:
+    - pycryptodome
+    subcategory:
+    - vuln
+    likelihood: LOW
+    impact: MEDIUM
+    confidence: HIGH
+    functional-categories:
+    - crypto::search::hash-algorithm::pycryptodome
+    - crypto::search::hash-algorithm::pycryptodomex
+  options:
+    symbolic_propagation: true
+  severity: WARNING
+  languages:
+  - python
+  pattern-either:
+  - pattern: Crypto.Hash.MD2.new(...)
+  - pattern: Cryptodome.Hash.MD2.new (...)
+#測到 MD4 雜湊演算法。它被認為是不安全的，且不具備碰撞抵抗性
+rules:
+- id: insecure-hash-algorithm-md4
+  message: >-
+    Detected MD4 hash algorithm which is considered insecure. MD4 is not
+    collision resistant and is therefore not suitable as a cryptographic
+    signature.
+    Use a modern hash algorithm from the SHA-2, SHA-3, or BLAKE2 family instead.
+  metadata:
+    source-rule-url: https://github.com/PyCQA/bandit/blob/d5f8fa0d89d7b11442fc6ec80ca42953974354c8/bandit/blacklists/calls.py#L59
+    cwe:
+    - 'CWE-327: Use of a Broken or Risky Cryptographic Algorithm'
+    owasp:
+    - A03:2017 - Sensitive Data Exposure
+    - A02:2021 - Cryptographic Failures
+    references:
+    - https://www.pycryptodome.org/src/hash/hash#modern-hash-algorithms
+    - https://www.schneier.com/blog/archives/2012/10/when_will_we_se.html
+    - https://www.trendmicro.com/vinfo/us/security/news/vulnerabilities-and-exploits/sha-1-collision-signals-the-end-of-the-algorithm-s-viability
+    - http://2012.sharcs.org/slides/stevens.pdf
+    - https://pycryptodome.readthedocs.io/en/latest/src/hash/sha3_256.html
+    category: security
+    technology:
+    - pycryptodome
+    subcategory:
+    - vuln
+    likelihood: LOW
+    impact: MEDIUM
+    confidence: HIGH
+    functional-categories:
+    - crypto::search::hash-algorithm::pycryptodome
+    - crypto::search::hash-algorithm::pycryptodomex
+  options:
+    symbolic_propagation: true
+  severity: WARNING
+  languages:
+  - python
+  pattern-either:
+  - pattern: Crypto.Hash.MD4.new(...)
+  - pattern: Cryptodome.Hash.MD4.new (...)
+#偵測到 MD5 雜湊演算法。它不具備碰撞抵抗性
+rules:
+- id: insecure-hash-algorithm-md5
+  message: >-
+    Detected MD5 hash algorithm which is considered insecure. MD5 is not
+    collision resistant and is therefore not suitable as a cryptographic
+    signature. 
+    Use a modern hash algorithm from the SHA-2, SHA-3, or BLAKE2 family instead.
+  metadata:
+    source-rule-url: https://github.com/PyCQA/bandit/blob/d5f8fa0d89d7b11442fc6ec80ca42953974354c8/bandit/blacklists/calls.py#L59
+    cwe:
+    - 'CWE-327: Use of a Broken or Risky Cryptographic Algorithm'
+    owasp:
+    - A03:2017 - Sensitive Data Exposure
+    - A02:2021 - Cryptographic Failures
+    references:
+    - https://www.pycryptodome.org/src/hash/hash#modern-hash-algorithms
+    - https://www.schneier.com/blog/archives/2012/10/when_will_we_se.html
+    - https://www.trendmicro.com/vinfo/us/security/news/vulnerabilities-and-exploits/sha-1-collision-signals-the-end-of-the-algorithm-s-viability
+    - http://2012.sharcs.org/slides/stevens.pdf
+    - https://pycryptodome.readthedocs.io/en/latest/src/hash/sha3_256.html
+    category: security
+    technology:
+    - pycryptodome
+    subcategory:
+    - vuln
+    likelihood: LOW
+    impact: MEDIUM
+    confidence: HIGH
+    functional-categories:
+    - crypto::search::hash-algorithm::pycryptodome
+    - crypto::search::hash-algorithm::pycryptodomex
+  options:
+    symbolic_propagation: true
+  severity: WARNING
+  languages:
+  - python
+  pattern-either:
+  - pattern: Crypto.Hash.MD5.new(...)
+  - pattern: Cryptodome.Hash.MD5.new (...)

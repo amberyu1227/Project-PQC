@@ -1,0 +1,268 @@
+sonarqube:
+
+#========
+#java
+#========
+#偵測 ChaCha20-Poly1305 的使用。這是一種現代的串流加密和認證加密組合，被認為具有量子安全性（抵抗 Shor's 演算法）。
+/*
+ * Sonar Cryptography Plugin
+ * Copyright (C) 2024 PQCA
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to you under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package com.ibm.plugin.rules.detection.bc.aeadcipher;
+
+import com.ibm.engine.model.context.CipherContext;
+import com.ibm.engine.model.factory.ValueActionFactory;
+import com.ibm.engine.rule.IDetectionRule;
+import com.ibm.engine.rule.builder.DetectionRuleBuilder;
+import com.ibm.plugin.rules.detection.bc.mac.BcMac;
+import java.util.List;
+import java.util.Map;
+import javax.annotation.Nonnull;
+import org.sonar.plugins.java.api.tree.Tree;
+
+public final class BcChaCha20Poly1305 {
+
+    private BcChaCha20Poly1305() {
+        // nothing
+    }
+
+    private static final String AEAD = "ChaCha20Poly1305";
+
+    private static final IDetectionRule<Tree> CONSTRUCTOR_1 =
+            new DetectionRuleBuilder<Tree>()
+                    .createDetectionRule()
+                    .forObjectTypes("org.bouncycastle.crypto.modes." + AEAD)
+                    .forConstructor()
+                    .shouldBeDetectedAs(new ValueActionFactory<>(AEAD))
+                    .withoutParameters()
+                    .buildForContext(new CipherContext(Map.of("kind", "CHACHA20POLY1305")))
+                    .inBundle(() -> "Bc")
+                    .withDependingDetectionRules(BcAEADCipherInit.rules());
+
+    private static final IDetectionRule<Tree> CONSTRUCTOR_2 =
+            new DetectionRuleBuilder<Tree>()
+                    .createDetectionRule()
+                    .forObjectTypes("org.bouncycastle.crypto.modes." + AEAD)
+                    .forConstructor()
+                    /*
+                     * With this constructor of `ChaCha20Poly1305`, the provided Mac is not necessarily Poly1305,
+                     * which we represent (for the translation) by capturing the value `ChaCha20Poly1305[WITH_MAC]`
+                     */
+                    .shouldBeDetectedAs(new ValueActionFactory<>(AEAD + "[WITH_MAC]"))
+                    .withMethodParameter("org.bouncycastle.crypto.Mac")
+                    .addDependingDetectionRules(BcMac.rules())
+                    .buildForContext(new CipherContext(Map.of("kind", "CHACHA20POLY1305")))
+                    .inBundle(() -> "Bc")
+                    .withDependingDetectionRules(BcAEADCipherInit.rules());
+
+    @Nonnull
+    public static List<IDetectionRule<Tree>> rules() {
+        return List.of(CONSTRUCTOR_1, CONSTRUCTOR_2);
+    }
+}
+#主要職責是定義一組 SonarQube 規則，這些規則將會在掃描 Java 程式碼時，查找並記錄特定幾種非對稱加密引擎的使用情況
+/*
+ * Sonar Cryptography Plugin
+ * Copyright (C) 2024 PQCA
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to you under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package com.ibm.plugin.rules.detection.bc.asymmetricblockcipher;
+
+import com.ibm.engine.model.context.CipherContext;
+import com.ibm.engine.model.context.IDetectionContext;
+import com.ibm.engine.model.factory.ValueActionFactory;
+import com.ibm.engine.rule.IDetectionRule;
+import com.ibm.engine.rule.builder.DetectionRuleBuilder;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import javax.annotation.Nonnull;
+import javax.annotation.Nullable;
+import org.sonar.plugins.java.api.tree.Tree;
+
+public final class BcAsymCipherEngine {
+
+    private BcAsymCipherEngine() {
+        // nothing
+    }
+
+    public static final List<String> blockCiphers =
+            List.of(
+                    "ElGamalEngine",
+                    "NaccacheSternEngine",
+                    "NTRUEngine",
+                    "RSABlindedEngine",
+                    "RSABlindingEngine",
+                    "RSAEngine");
+
+    private static @Nonnull List<IDetectionRule<Tree>> constructors(
+            @Nullable IDetectionContext detectionValueContext) {
+        List<IDetectionRule<Tree>> constructorsList = new LinkedList<>();
+        IDetectionContext context =
+                detectionValueContext != null
+                        ? detectionValueContext
+                        : new CipherContext(Map.of("kind", "ASYMMETRIC_CIPHER_ENGINE"));
+
+        for (String engine : blockCiphers) {
+            constructorsList.add(
+                    new DetectionRuleBuilder<Tree>()
+                            .createDetectionRule()
+                            .forObjectTypes("org.bouncycastle.crypto.engines." + engine)
+                            .forConstructor()
+                            .shouldBeDetectedAs(new ValueActionFactory<>(engine))
+                            .withoutParameters()
+                            .buildForContext(context)
+                            .inBundle(() -> "Bc")
+                            .withDependingDetectionRules(BcAsymCipherInit.rules()));
+        }
+        return constructorsList;
+    }
+
+    @Nonnull
+    public static List<IDetectionRule<Tree>> rules() {
+        return rules(null);
+    }
+
+    @Nonnull
+    public static List<IDetectionRule<Tree>> rules(
+            @Nullable IDetectionContext detectionValueContext) {
+        return constructors(detectionValueContext);
+    }
+}
+#定義了三條規則，用於偵測對 PKCS1Encoding 的實例化。雖然 PKCS#1 v1.5 是一種傳統且廣泛使用的 RSA 填充方案，但它不具備選擇密文攻擊 (CCA) 的抵抗能力，不如現代的 OAEP 安全，因此常被安全審計標記為需要審查或替換。
+/*
+ * Sonar Cryptography Plugin
+ * Copyright (C) 2024 PQCA
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to you under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package com.ibm.plugin.rules.detection.bc.asymmetricblockcipher;
+
+import static com.ibm.plugin.rules.detection.TypeShortcuts.BYTE_ARRAY_TYPE;
+
+import com.ibm.engine.model.context.CipherContext;
+import com.ibm.engine.model.context.IDetectionContext;
+import com.ibm.engine.model.factory.ValueActionFactory;
+import com.ibm.engine.rule.IDetectionRule;
+import com.ibm.engine.rule.builder.DetectionRuleBuilder;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import javax.annotation.Nonnull;
+import javax.annotation.Nullable;
+import org.sonar.plugins.java.api.tree.Tree;
+
+public final class BcPKCS1Encoding {
+
+    private BcPKCS1Encoding() {
+        // nothing
+    }
+
+    @Nonnull
+    private static List<IDetectionRule<Tree>> constructors(
+            @Nullable IDetectionContext encodingDetectionValueContext,
+            @Nullable IDetectionContext engineDetectionValueContext) {
+        List<IDetectionRule<Tree>> constructorsList = new LinkedList<>();
+        IDetectionContext context =
+                encodingDetectionValueContext != null
+                        ? encodingDetectionValueContext
+                        : new CipherContext(Map.of("kind", "ENCODING"));
+
+        constructorsList.add(
+                new DetectionRuleBuilder<Tree>()
+                        .createDetectionRule()
+                        .forObjectTypes("org.bouncycastle.crypto.encodings.PKCS1Encoding")
+                        .forConstructor()
+                        .shouldBeDetectedAs(new ValueActionFactory<>("PKCS1Encoding"))
+                        .withMethodParameter("org.bouncycastle.crypto.AsymmetricBlockCipher")
+                        .addDependingDetectionRules(
+                                BcAsymCipherEngine.rules(engineDetectionValueContext))
+                        .buildForContext(context)
+                        .inBundle(() -> "Bc")
+                        .withDependingDetectionRules(BcAsymCipherInit.rules()));
+
+        constructorsList.add(
+                new DetectionRuleBuilder<Tree>()
+                        .createDetectionRule()
+                        .forObjectTypes("org.bouncycastle.crypto.encodings.PKCS1Encoding")
+                        .forConstructor()
+                        .shouldBeDetectedAs(new ValueActionFactory<>("PKCS1Encoding"))
+                        .withMethodParameter("org.bouncycastle.crypto.AsymmetricBlockCipher")
+                        .addDependingDetectionRules(
+                                BcAsymCipherEngine.rules(engineDetectionValueContext))
+                        .withMethodParameter(BYTE_ARRAY_TYPE)
+                        .buildForContext(context)
+                        .inBundle(() -> "Bc")
+                        .withDependingDetectionRules(BcAsymCipherInit.rules()));
+
+        constructorsList.add(
+                new DetectionRuleBuilder<Tree>()
+                        .createDetectionRule()
+                        .forObjectTypes("org.bouncycastle.crypto.encodings.PKCS1Encoding")
+                        .forConstructor()
+                        .shouldBeDetectedAs(new ValueActionFactory<>("PKCS1Encoding"))
+                        .withMethodParameter("org.bouncycastle.crypto.AsymmetricBlockCipher")
+                        .addDependingDetectionRules(
+                                BcAsymCipherEngine.rules(engineDetectionValueContext))
+                        .withMethodParameter("int")
+                        .buildForContext(context)
+                        .inBundle(() -> "Bc")
+                        .withDependingDetectionRules(BcAsymCipherInit.rules()));
+
+        return constructorsList;
+    }
+
+    @Nonnull
+    public static List<IDetectionRule<Tree>> rules() {
+        return rules(null, null);
+    }
+
+    @Nonnull
+    public static List<IDetectionRule<Tree>> rules(
+            @Nullable IDetectionContext encodingDetectionValueContext,
+            @Nullable IDetectionContext engineDetectionValueContext) {
+        return constructors(encodingDetectionValueContext, engineDetectionValueContext);
+    }
+}
