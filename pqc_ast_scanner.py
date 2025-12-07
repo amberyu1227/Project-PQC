@@ -1,389 +1,124 @@
+# pqc_ast_scanner.py - 自製 PQC 混合審計工具 (借鑒 Bandit/Semgrep 理念)
+
 import ast
 import sys
 import os
-import javalang          # 需要安裝: pip install javalang
-import pycparser         # 需要安裝: pip install pycparser
-from pycparser import c_parser, c_ast, parse_file
-import json
-import datetime
 
-# --- PQC 知識庫與修復建議 (PQC_KNOWLEDGE_BASE) ---
+# --- PQC 知識庫與修復建議 (借鑒 PQCA 的優點) ---
 PQC_KNOWLEDGE_BASE = {
-    # 弱雜湊 (Priority Fixes)
-    "B303": {"type": "WEAK_HASH_SHA1", "message": "使用了 SHA1 雜湊算法。", "fix": "替換為 hashlib.sha256/sha3，SHA1 對碰撞攻擊是脆弱的。"},
-    "B324": {"type": "WEAK_HASH_MD5", "message": "使用了 MD5 雜湊算法。", "fix": "必須移除 MD5，替換為 SHA256。"},
-    # 弱加密算法 (Priority Fixes)
-    "B304": {"type": "WEAK_CIPHER_DES", "message": "使用了 DES/3DES 弱加密算法。", "fix": "停用 DES/3DES，改用 AES-256 GCM 模式。"},
-    # 量子脆弱資產與使用樣式 (PQC/AES)
-    "B413_RSA": {"type": "PQC_TARGET_RSA", "message": "發現 RSA 密鑰生成。", "fix": "量子脆弱：考慮替換為 CRYSTALS-Kyber (KEM) 或 Dilithium (Signature)。"},
-    "B413_AES_WEAK": {"type": "WEAK_CIPHER_MODE", "message": "使用了不安全的 AES/ECB 模式。", "fix": "替換為 AES-256 GCM 或 CCM 模式，確保認證性。"},
-    "B413_AES_SAFE": {"type": "TRADITIONAL_AES_ASSET", "message": "使用了 AES 加密資產。", "fix": "這是一個抗量子資產。請確保 IV/Nonce 是正確生成的。"},
-    "B413_RSA_WEAK_SIZE": {
-        "type": "WEAK_ASSET_RSA", 
-        "message": "發現 RSA 密鑰長度小於 2048 bits，對暴力破解脆弱。", 
-        "fix": "將密鑰長度至少增加到 2048/4096 bits，並規劃 PQC 遷移。"
-    },
-    # CBC/CFB 模式 IV 缺失 (使用樣式風險)
-    "B413_IV_WEAK": {
-        "type": "WEAK_IV_NONCE", 
-        "message": "在 CBC/CFB 模式中，未偵測到 IV/Nonce 參數，易受重放攻擊。", 
-        "fix": "必須使用 os.urandom (Python) 或 SecureRandom (Java) 創建隨機 IV。"
-    },
-    # 量子脆弱的 ECC
-    "B413_ECC": { 
-        "type": "PQC_TARGET_ECC", 
-        "message": "發現 ECC/ECDSA/ECDH 橢圓曲線加密資產。", 
-        "fix": "核心量子脆弱資產，建議替換為 CRYSTALS-Dilithium/Falcon。"
-    },
+    # 规则 ID: [风险类型, 风险等级, 修复建议]
+    "B303": ["WEAK_HASH_SHA1", "HIGH", "替换为 hashlib.sha256/sha3，SHA1 易受碰撞攻击。"],
+    "B304": ["WEAK_CIPHER_DES", "HIGH", "停用 DES/3DES，改用 AES-256 GCM 模式。"],
+    "B324": ["WEAK_HASH_MD5", "CRITICAL", "立即移除 MD5，替换为 SHA256。"],
+    "B413_RSA": ["PQC_TARGET_RSA", "INFO", "量子脆弱：考虑替换为 CRYSTALS-Kyber (KEM)。"],
+    "B413_AES": ["TRADITIONAL_AES", "LOW", "传统对等加密，确保使用 GCM/CCM 模式。"]
 }
-# ----------------------------------------
 
 
-# --- 核心邏輯：報告生成 (作為獨立函數) ---
-def report_finding(node, filename, line, rule_id, custom_message=None):
-    info = PQC_KNOWLEDGE_BASE.get(rule_id, {"type": "UNKNOWN", "message": "未知規則", "fix": "N/A"})
-    
-    # 根據節點類型獲取代碼片段（適應 Python, Java, C）
-    if isinstance(node, (ast.Call, ast.Attribute)):
-        code_snippet = ast.unparse(node).strip()
-    elif hasattr(node, 'value'):
-        # 適用於 javalang 的 Literal 節點
-        code_snippet = str(node.value).strip('"') 
-    elif hasattr(node, 'name'):
-        # 適用於 C AST (FuncCall)
-        code_snippet = str(node.name) if isinstance(node, c_ast.FuncCall) else str(node)
-    else:
-        code_snippet = str(node)
-
-    return {
-        "RuleID": rule_id,
-        "Type": info.get('type', 'UNKNOWN_TYPE'),
-        "Location": f"{filename}:{line}",
-        "CodeSnippet": code_snippet,
-        "Message": custom_message if custom_message else info.get('message', 'N/A'),
-        "FixSuggestion": info.get('fix', 'N/A')
-    }
-
-# --- Python 掃描核心 ---
+# --- 核心分析引擎：AST 访问器 (借鑒 Bandit 的优點) ---
 class PQC_AST_Visitor(ast.NodeVisitor):
-    def __init__(self, filename, findings_list):
+    def __init__(self, filename):
         self.filename = filename
-        self.findings_list = findings_list 
+        self.findings = []
 
     def visit_Call(self, node):
+        """访问 AST 中的所有函数调用节点"""
+        
         full_name = self._get_full_name(node.func)
         
-        # 1. 弱雜湊 (最高優先級別)
-        if "hashlib.sha1" in full_name:
-            self.findings_list.append(report_finding(node, self.filename, node.lineno, "B303"))
-        elif "hashlib.md5" in full_name: 
-            self.findings_list.append(report_finding(node, self.filename, node.lineno, "B324"))
-            
-        # 2. 量子脆弱/弱加密 (DES, RSA)
-        elif "Crypto.Cipher.DES" in full_name:
-            self.findings_list.append(report_finding(node, self.filename, node.lineno, "B304"))
-            
-        elif "RSA.generate" in full_name:
-            key_size = self._get_int_arg(node.args, 0)
-            if key_size is not None and key_size < 2048:
-                 self.findings_list.append(report_finding(node, self.filename, node.lineno, "B413_RSA_WEAK_SIZE"))
-            else:
-                 self.findings_list.append(report_finding(node, self.filename, node.lineno, "B413_RSA"))
-                 
-        # 3. AES 模式檢查 (修正邏輯，確保 ECB/IV 缺失優先被檢查)
-        elif "AES.new" in full_name:
-            is_ecb = self._is_ecb_mode(node)
-            is_cbc_cfb = self._is_cbc_cfb_mode(node)
-            iv_is_missing = not self._has_keyword_arg(node.keywords, 'iv')
-            
-            # 確保最危險的模式優先被標記 (ECB)
-            if is_ecb: 
-                finding = report_finding(node, self.filename, node.lineno, "B413_AES_WEAK") 
-            # 其次檢查 IV 缺失 (使用樣式漏洞)
-            elif is_cbc_cfb and iv_is_missing: 
-                 finding = report_finding(node, self.filename, node.lineno, "B413_IV_WEAK") 
-            # 最後，如果通過所有漏洞檢查，則視為安全資產
-            else:
-                 finding = report_finding(node, self.filename, node.lineno, "B413_AES_SAFE") 
-            
-            self.findings_list.append(finding) 
+        # --- PQC 规则匹配 (借鑒 Semgrep 的模式匹配理念) ---
         
-        # 確保繼續遍歷子節點
+        # 1. 量子脆弱的 RSA 资产盘点
+        if "RSA.generate" in full_name:
+            self.report_finding(node, "B413_RSA")
+
+        # 2. 弱哈希函数检测
+        elif "hashlib.sha1" in full_name:
+            self.report_finding(node, "B303")
+            
+        elif "hashlib.md5" in full_name:
+            self.report_finding(node, "B324")
+            
+        # 3. 弱加密算法检测
+        elif "Crypto.Cipher.DES" in full_name:
+            self.report_finding(node, "B304")
+            
+        elif "AES.new" in full_name:
+            # 检查是否是 AES.new 的调用，进一步判断是否使用了 ECB 模式 (进阶逻辑)
+            if self._is_ecb_mode(node):
+                self.report_finding(node, "B413_AES", "警告：使用了不安全的 AES/ECB 模式。")
+            else:
+                 self.report_finding(node, "B413_AES") # 标记 AES 使用
+            
+        # 确保继续遍历子节点
         self.generic_visit(node)
 
-    # 辅助函数: 获取完整函数名
+    # --- 辅助函数：获取完整函数名 ---
     def _get_full_name(self, node):
+        """递归解析属性访问，生成 'module.class.function' 字符串"""
         if isinstance(node, ast.Attribute):
             return self._get_full_name(node.value) + "." + node.attr
         elif isinstance(node, ast.Name):
             return node.id
         return ""
     
-    # 辅助函数: 检查 ECB 模式
+    # --- 进阶辅助函数：检查 ECB 模式 (模仿 Bandit 的数据流分析) ---
     def _is_ecb_mode(self, call_node):
+        """检查 AES.new 调用中是否传入了 AES.MODE_ECB 模式"""
         for keyword in call_node.keywords:
             if keyword.arg == 'mode':
-                return 'ECB' in ast.unparse(keyword.value).upper()
-        # 檢查第二個位置參數
-        if len(call_node.args) > 1:
-            return 'ECB' in ast.unparse(call_node.args[1]).upper()
-        return False
-    
-    # 辅助函数: 检查 CBC/CFB 模式 (需要 IV)
-    def _is_cbc_cfb_mode(self, call_node):
-        for keyword in call_node.keywords:
-            if keyword.arg == 'mode':
-                mode = ast.unparse(keyword.value).upper()
-                return 'CBC' in mode or 'CFB' in mode
-        # 檢查第二個位置參數
-        if len(call_node.args) > 1:
-            mode = ast.unparse(call_node.args[1]).upper()
-            return 'CBC' in mode or 'CFB' in mode
-        return False
-    
-    # 辅助函数: 检查关键字参数是否存在
-    def _has_keyword_arg(self, keywords, arg_name):
-        return any(keyword.arg == arg_name for keyword in keywords)
-        
-    # 辅助函数: 获取整数参数 (Key Size)
-    def _get_int_arg(self, args, index):
-        if len(args) > index:
-            arg = args[index]
-            if isinstance(arg, ast.Constant) and isinstance(arg.value, int):
-                return arg.value
-        return None
+                # 这是一个简单的检查：如果 mode 参数的名称包含 ECB，则返回 True
+                return 'ECB' in ast.unparse(keyword.value)
+        return False # 如果没有指定 mode，则默认检查失败
 
-def scan_python(filepath):
-    findings_list = []
-    with open(filepath, 'r', encoding='utf-8') as f:
+    # --- 报告生成 ---
+    def report_finding(self, node, rule_id, custom_message=None):
+        info = PQC_KNOWLEDGE_BASE.get(rule_id, {"type": "UNKNOWN", "fix": "N/A"})
+        
+        self.findings.append({
+            "RuleID": rule_id,
+            "Type": info['type'],
+            "Location": f"{self.filename}:{node.lineno}",
+            "CodeSnippet": ast.unparse(node).strip(),
+            "Message": custom_message if custom_message else info.get('message', 'N/A'),
+            "FixSuggestion": info['fix'] # 最终的修补建议
+        })
+
+# --- 运行主程序 ---
+def scan_project(filepath):
+    with open(filepath, 'r') as f:
         code = f.read()
-    tree = ast.parse(code, filename=filepath) 
-    visitor = PQC_AST_Visitor(filepath, findings_list)
+    
+    # 解析代码为 AST
+    tree = ast.parse(code)
+    
+    # 运行访问器
+    visitor = PQC_AST_Visitor(filepath)
     visitor.visit(tree)
-    return findings_list
-
-
-# --- Java 掃描核心 ---
-def scan_java(filepath):
-    findings_list = []
-    with open(filepath, 'r', encoding='utf-8') as f:
-        code = f.read()
-
-    try:
-        # javalang 解析器
-        tree = javalang.parse.parse(code) 
-        
-    except javalang.tokenizer.LexerError as e:
-        # 捕獲詞法錯誤 (例如非法字符)，返回錯誤資訊
-        print(f"❌ Java Lexer Error (可能為非法字符或 BOM): {e}")
-        return []
-    except javalang.parser.ParserError as e:
-        # 捕獲語法錯誤 (例如缺少分號或類別名錯誤)
-        print(f"❌ Java Parser Error (語法錯誤或結構不完整): {e}")
-        return []
-    except Exception as e:
-        # 捕獲其他所有錯誤
-        print(f"❌ Java AST 錯誤: {e}")
-        return []
-
-    # --- 成功解析後，開始遍歷 AST ---
-    for path, node in tree:
-        # 只尋找方法呼叫 (MethodInvocation)
-        if isinstance(node, javalang.tree.MethodInvocation) and node.member == 'getInstance':
-            
-            # 檢查參數是否為字符串字面量
-            if node.arguments and isinstance(node.arguments[0], javalang.tree.Literal):
-                arg_value = node.arguments[0].value.strip('"').upper()
-                line_num = node.position.line
-                
-                # 1. 弱雜湊 (優先級最高)
-                if "SHA1" in arg_value:
-                    findings_list.append(report_finding(node, filepath, line_num, "B303"))
-                elif "MD5" in arg_value:
-                    findings_list.append(report_finding(node, filepath, line_num, "B324"))
-
-                # 2. 弱加密 (DES)
-                elif "DES" in arg_value:
-                    findings_list.append(report_finding(node, filepath, line_num, "B304")) 
-                
-                # 3. AES 模式檢查 (必須在 DES 之後，避免與 ECB/GCM 衝突)
-                elif "AES" in arg_value:
-                    if "ECB" in arg_value:
-                        # 3.1 偵測 AES/ECB 模式 (不安全)
-                        findings_list.append(report_finding(node, filepath, line_num, "B413_AES_WEAK")) 
-                    else:
-                        # 3.2 偵測其他 AES 模式 (資產盤點)
-                        # 將所有非 ECB 的 AES 視為安全資產盤點
-                        findings_list.append(report_finding(node, filepath, line_num, "B413_AES_SAFE"))
-
-                # 4. PQC 遷移目標 (RSA & ECC - 放到最後檢查，避免與 AES/DES 衝突)
-                elif "RSA" in arg_value:
-                    # 這裡沒有實現 Java 的 Key Size 檢查，只標記為 PQC 目標
-                    findings_list.append(report_finding(node, filepath, line_num, "B413_RSA"))
-                elif "EC" in arg_value or "ECDSA" in arg_value or "ECDH" in arg_value:
-                    # 標記 ECC 
-                    findings_list.append(report_finding(node, filepath, line_num, "B413_ECC"))
-                    
-    return findings_list
-
-# --- C/C++ 掃描核心 ---
-def scan_c_cpp(filepath):
-    print(f"C/C++ 掃描邏輯尚未實作。")
-    return []
-
-
-# --- 主控函數 ---
-def scan_project_recursive(root_dir):
-    all_findings = []
-    SUPPORTED_EXTENSIONS = ('.py', '.java', '.c', '.cpp')
-
-    for dirpath, dirnames, filenames in os.walk(root_dir):
-        if 'pqc_venv' in dirpath or '.git' in dirpath: # 忽略虚拟环境和 Git 目录
-            continue
-            
-        for filename in filenames:
-            if filename.endswith(SUPPORTED_EXTENSIONS):
-                filepath = os.path.join(dirpath, filename)
-                print(f"掃描檔案: {filepath}")
-                
-                try:
-                    findings = scan_file(filepath)
-                    all_findings.extend(findings)
-                except Exception as e:
-                    print(f"❌ 檔案 {filepath} 掃描失敗: {e}")
-                    
-    return all_findings
-
-# --- CBOM 生成核心 ---
-def generate_cbom(findings, project_path, output_file="cbom.json"):
-    """
-    將掃描發現 (findings) 轉換為結構化的 CBOM JSON 檔案。
-    這裡採用簡化的 CycloneDX 風格結構。
-    """
     
-    # 1. 建立 CBOM 檔頭資訊 (Metadata)
-    cbom_data = {
-        "bomFormat": "CycloneDX",  # 標示格式 (雖然我們是簡化版)
-        "specVersion": "1.4",
-        "serialNumber": f"urn:uuid:{os.urandom(16).hex()}", # 隨機生成唯一 ID
-        "version": 1,
-        "metadata": {
-            "timestamp": datetime.datetime.now().isoformat(),
-            "component": {
-                "name": os.path.basename(os.path.abspath(project_path)),
-                "type": "application",
-                "location": os.path.abspath(project_path)
-            },
-            "tools": [
-                {
-                    "vendor": "CustomPQC",
-                    "name": "PQC-AST-Scanner",
-                    "version": "1.0.0"
-                }
-            ]
-        },
-        "components": [],  # 這裡可以放依賴套件 (本次 demo 略過)
-        "dependencies": [],
-        # 這是 CBOM 最重要的部分：加密資產清單
-        "crypto-assets": [] 
-    }
-
-    # 2. 將 findings 轉換為 crypto-assets
-    for finding in findings:
-        asset = {
-            "type": "cryptographic-asset",
-            "name": finding['CodeSnippet'],      # 例如 "AES.new", "MD5"
-            "algorithm": finding.get('Type', 'UNKNOWN'), # 例如 WEAK_HASH_MD5
-            "oid": finding['RuleID'],            # 使用我們的 RuleID 作為識別
-            "pqc_status": _determine_pqc_status(finding['RuleID']), # 判斷是否量子安全
-            "occurrences": [
-                {
-                    "location": finding['Location'],
-                    "line": int(finding['Location'].split(':')[-1]) if ':' in finding['Location'] else 0
-                }
-            ],
-            "risk": {
-                "message": finding['Message'],
-                "suggestion": finding['FixSuggestion']
-            }
-        }
-        cbom_data["crypto-assets"].append(asset)
-
-    # 3. 寫入檔案
-    try:
-        with open(output_file, 'w', encoding='utf-8') as f:
-            json.dump(cbom_data, f, indent=4, ensure_ascii=False)
-        print(f"\n[CBOM] 成功生成加密物料清單: {os.path.abspath(output_file)}")
-    except Exception as e:
-        print(f"\n[CBOM] 生成失敗: {e}")
-
-def _determine_pqc_status(rule_id):
-    """根據 RuleID 簡單判斷 PQC 狀態"""
-    if "SHA1" in rule_id or "MD5" in rule_id or "DES" in rule_id:
-        return "VULNERABLE (CLASSIC)" # 傳統漏洞
-    if "RSA" in rule_id or "ECC" in rule_id:
-        return "VULNERABLE (QUANTUM)" # 量子脆弱
-    if "AES" in rule_id:
-        if "WEAK" in rule_id:
-            return "VULNERABLE (CONFIGURATION)" # 配置錯誤 (如 ECB)
-        return "SAFE (QUANTUM-RESISTANT)" # AES-256 通常被視為抗量子
-    return "UNKNOWN"
-
-def scan_file(filepath):
-    if filepath.endswith(".py"):
-        return scan_python(filepath)
-    elif filepath.endswith(".java"):
-        return scan_java(filepath)
-    elif filepath.endswith(".c") or filepath.endswith(".cpp"):
-        return scan_c_cpp(filepath)
-    else:
-        return []
-
+    return visitor.findings
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("用法: python3 pqc_ast_scanner.py <檔案路徑> | <目錄路徑>")
+        print("用法: python3 pqc_ast_scanner.py <Python 檔案路徑>")
         sys.exit(1)
 
-    path_to_scan = sys.argv[1]
+    findings = scan_project(sys.argv[1])
     
-    if not os.path.exists(path_to_scan):
-        print(f"❌ 錯誤: 找不到路徑 {path_to_scan}。請確認路徑是否正確。")
-        sys.exit(1)
-
-    try:
-        if os.path.isdir(path_to_scan):
-            findings = scan_project_recursive(path_to_scan)
-        else:
-            findings = scan_file(path_to_scan)
-
-    except Exception as e:
-        print(f"致命錯誤：掃描過程中發生異常: {e}")
-        sys.exit(1)
-        
     print("\n--- 專案 PQC 靜態掃描報告 (自製工具) ---")
-    print(f"總發現問題數: {len(findings)}\n")
-
-    # (打印詳細報告邏輯)
-    for i, f in enumerate(findings):
-        print(f"----- FINDING #{i+1} -----")
-        print(f"類型: {f['Type']} ({f['RuleID']})")
-        print(f"位置: {f['Location']}")
-        print(f"代碼: {f['CodeSnippet']}")
-        print(f"問題: {f['Message']}")
-        print(f"🟢 修補建議: {f['FixSuggestion']}")
-
-    # 生成 CBOM 檔案
-    for i, f in enumerate(findings):
-        print(f"----- FINDING #{i+1} -----")
-        print(f"類型: {f['Type']} ({f['RuleID']})")
-        print(f"位置: {f['Location']}")
-        print(f"代碼: {f['CodeSnippet']}")
-        print(f"問題: {f['Message']}")
-        print(f"🟢 修補建議: {f['FixSuggestion']}")
-    
-    # --- 新增：呼叫 CBOM 生成函數 ---
-    if len(findings) > 0:
-        generate_cbom(findings, path_to_scan)
+    if not findings:
+        print("✅ 未發現任何 PQC 相關的傳統加密資產或弱點。")
     else:
-        print("\n未發現相關加密資產，跳過 CBOM 生成。")
+        pqc_targets = [f for f in findings if 'PQC_TARGET' in f['RuleID']]
+        weak_ciphers = len(findings) - len(pqc_targets)
+        
+        print(f"總發現問題數: {len(findings)}")
+        print(f"待遷移資產數: {len(pqc_targets)}\n")
+
+        for i, f in enumerate(findings):
+            print(f"----- FINDING #{i+1} -----")
+            print(f"類型: {f['Type']}")
+            print(f"位置: {f['Location']}")
+            print(f"代碼: {f['CodeSnippet']}")
+            print(f"問題: {f['Message']}")
+            print(f"🟢 修補建議: {f['FixSuggestion']}")
