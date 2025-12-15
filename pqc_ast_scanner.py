@@ -69,7 +69,9 @@ def report_finding(node, filename, line, rule_id, custom_message=None):
     info = PQC_KNOWLEDGE_BASE.get(rule_id, {"type": "UNKNOWN", "message": "未知規則", "fix": "N/A"})
     
     # 根據節點類型獲取代碼片段（適應 Python, Java, C）
-    if isinstance(node, (ast.Call, ast.Attribute)):
+    if isinstance(node, str):
+        code_snippet = node
+    elif isinstance(node, (ast.Call, ast.Attribute)):
         code_snippet = ast.unparse(node).strip()
     elif hasattr(node, 'value'):
         # 適用於 javalang 的 Literal 節點
@@ -80,10 +82,12 @@ def report_finding(node, filename, line, rule_id, custom_message=None):
     else:
         code_snippet = str(node)
 
+    location_str = f"{filename}:{line}" if line > 0 else f"{filename}:N/A"
+
     return {
         "RuleID": rule_id,
         "Type": info.get('type', 'UNKNOWN_TYPE'),
-        "Location": f"{filename}:{line}",
+        "Location": location_str,
         "CodeSnippet": code_snippet,
         "Message": custom_message if custom_message else info.get('message', 'N/A'),
         "FixSuggestion": info.get('fix', 'N/A')
@@ -360,160 +364,175 @@ def scan_java(filepath):
 
     # --- 成功解析後，開始遍歷 AST ---
     for path, node in tree:
-        # 只尋找方法呼叫 (MethodInvocation)
+        try:
+            # 確保 node 是一個 javalang AST 節點， path 是節點路徑
+            if not isinstance(node, javalang.tree.Node):
+                continue
+        except ValueError:
+            # 捕獲 too many values to unpack 錯誤
+            # 這表示 javalang 返回的不是 (path, node) 格式
+            continue
+        
+        line_num = node.position.line if node.position else 0
+
+        # 如果行號為 0 (缺失)，嘗試從路徑中回溯到最近的父節點
+        if line_num == 0:
+            # 關鍵修正：將 path 迭代包裹在 try-except 塊中，以防 path 內部結構不穩定
+            try:
+                for p_item in reversed(path):
+                    # p_item 應該是 (attribute_name, p_node)
+                    if len(p_item) == 2:
+                        p_node = p_item[1]
+                        if p_node.position:
+                            line_num = p_node.position.line
+                            break
+            except Exception:
+                # 捕獲 path 迭代時的解包錯誤
+                pass
+        
+        # 排除掉頂層的 PackageDeclaration 或 Import 語句
+        if line_num == 0 and isinstance(node, (javalang.tree.PackageDeclaration, javalang.tree.Import)):
+            continue
+        
+        
+        # 1. 方法呼叫檢查 (MethodInvocation)
         if isinstance(node, javalang.tree.MethodInvocation):
             
+            # [getInstance 檢查]
             if node.member == 'getInstance':
-                # 檢查參數是否為字符串字面量
                 if node.arguments and isinstance(node.arguments[0], javalang.tree.Literal):
                     arg_value = node.arguments[0].value.strip('"').upper()
-                    line_num = node.position.line
-
-                    # 1. 弱雜湊 (優先級最高)
+                    
+                    # === 構造清晰的代碼片段 (getInstance) ===
+                    qualifier = node.qualifier if node.qualifier else "Cipher/Digest"
+                    readable_snippet = f"{qualifier}.getInstance(\"{node.arguments[0].value.strip('\"')}\")"
+                    
+                    # 規則匹配 (使用 readable_snippet)
                     if "SHA1" in arg_value or "SHA-1" in arg_value:
-                        findings_list.append(report_finding(node, filepath, line_num, "B303"))
+                        findings_list.append(report_finding(readable_snippet, filepath, line_num, "B303"))
                     elif "MD5" in arg_value:
-                        findings_list.append(report_finding(node, filepath, line_num, "B324"))
-
-                    # 2. 弱加密 (DES)
-                    elif "DES" in arg_value:
-                        findings_list.append(report_finding(node, filepath, line_num, "B304")) 
-                    elif "DESEDE" in arg_value:
-                        findings_list.append(report_finding(node, filepath, line_num, "B304"))
-
-                    # 3. AES 模式檢查 (必須在 DES 之後，避免與 ECB/GCM 衝突)
+                        findings_list.append(report_finding(readable_snippet, filepath, line_num, "B324"))
+                    elif "DES" in arg_value or "DESEDE" in arg_value:
+                        findings_list.append(report_finding(readable_snippet, filepath, line_num, "B304")) 
                     elif "AES" in arg_value:
                         if "ECB" in arg_value:
-                            # 3.1 偵測 AES/ECB 模式 (不安全)
-                            findings_list.append(report_finding(node, filepath, line_num, "B413_AES_WEAK")) 
+                            findings_list.append(report_finding(readable_snippet, filepath, line_num, "B413_AES_WEAK")) 
                         else:
-                            # 3.2 偵測其他 AES 模式 (資產盤點)
-                            # 將所有非 ECB 的 AES 視為安全資產盤點
-                            findings_list.append(report_finding(node, filepath, line_num, "B413_AES_SAFE"))
-
-                    # 4. PQC 遷移目標 (RSA & ECC - 放到最後檢查，避免與 AES/DES 衝突)
+                            findings_list.append(report_finding(readable_snippet, filepath, line_num, "B413_AES_SAFE"))
                     elif "RSA" in arg_value:
-                        # 這裡沒有實現 Java 的 Key Size 檢查，只標記為 PQC 目標
-                        findings_list.append(report_finding(node, filepath, line_num, "B413_RSA"))
+                        findings_list.append(report_finding(readable_snippet, filepath, line_num, "B413_RSA"))
                     elif "EC" in arg_value or "ECDSA" in arg_value or "ECDH" in arg_value:
-                        # 標記 ECC 
-                        findings_list.append(report_finding(node, filepath, line_num, "B413_ECC"))
+                        findings_list.append(report_finding(readable_snippet, filepath, line_num, "B413_ECC"))
 
+            # [initialize 檢查]
             elif node.member == 'initialize':
                 if len(node.arguments) == 1 and isinstance(node.arguments[0], javalang.tree.Literal):
                     try:
                         key_size = int(node.arguments[0].value)
+                        readable_snippet = f"keyPairGenerator.initialize({key_size})" 
+                        
                         if key_size < 2048:
-                            findings_list.append(report_finding(node, filepath, node.position.line, "B413_RSA_WEAK_SIZE", f"RSA 金鑰過短 ({key_size})"))
+                            findings_list.append(report_finding(readable_snippet, filepath, line_num, "B413_RSA_WEAK_SIZE", f"RSA 金鑰過短 ({key_size})"))
                         else:
-                            findings_list.append(report_finding(node, filepath, node.position.line, "B413_RSA", "RSA 金鑰生成 (PQC 目標)"))
+                            findings_list.append(report_finding(readable_snippet, filepath, line_num, "B413_RSA", "RSA 金鑰生成 (PQC 目標)"))
                     except ValueError:
                         pass
-
-            # [B701] 弱亂數 (java.util.Random)
+            
+            # [弱亂數 nextInt/nextBytes 檢查]
             elif node.member == 'nextInt' or node.member == 'nextBytes':
-                # 簡單啟發式：如果是在 Random 物件上調用
-                # javalang 很難追蹤變數類型，這裡假設變數名包含 'rand' 且不是 SecureRandom
                 if hasattr(node, 'qualifier') and node.qualifier and 'rand' in node.qualifier.lower() and 'secure' not in node.qualifier.lower():
-                    findings_list.append(report_finding(node, filepath, node.position.line, "B701_WEAK_RNG"))
-
+                    readable_snippet = f"{node.qualifier}.{node.member}(...)"
+                    findings_list.append(report_finding(readable_snippet, filepath, line_num, "B701_WEAK_RNG"))
         # 2. 變數宣告檢查 (LocalVariableDeclaration) - 硬編碼機密
         elif isinstance(node, javalang.tree.LocalVariableDeclaration):
             for declarator in node.declarators:
-                # 檢查是否有初始化值，且值為字串字面量
                 var_name = declarator.name.lower()
-                line_num = node.position.line if node.position else 0
 
+                # [硬編碼機密檢查]
                 if declarator.initializer and isinstance(declarator.initializer, javalang.tree.Literal):
-                    # 獲取變數名和值
                     raw_value = str(declarator.initializer.value)
+                    
                     if raw_value.startswith('"'):
                         value = raw_value.strip('"')
-
-                        # [B707] AWS 憑證
+                        # === 構造硬編碼密鑰片段 ===
+                        readable_snippet = f"{declarator.name} = \"{value[:15]}...\""
+                        
                         if value.startswith("AKIA") or value.startswith("ASIA"):
-                            findings_list.append(report_finding(node, filepath, line_num, "B707_HARDCODED_AWS"))
-
+                            findings_list.append(report_finding(readable_snippet, filepath, line_num, "B707_HARDCODED_AWS"))
                         elif is_secret_var(var_name):
                             if "password" in var_name:
-                                findings_list.append(report_finding(node, filepath, line_num, "B706_HARDCODED_PASSWORD"))
+                                findings_list.append(report_finding(readable_snippet, filepath, line_num, "B706_HARDCODED_PASSWORD"))
                             elif "token" in var_name:
-                                findings_list.append(report_finding(node, filepath, line_num, "B708_HARDCODED_TOKEN"))
+                                findings_list.append(report_finding(readable_snippet, filepath, line_num, "B708_HARDCODED_TOKEN"))
                             elif "pqc" in var_name or "kyber" in var_name:
-                                findings_list.append(report_finding(node, filepath, line_num, "B709_HARDCODED_PQC_SK"))
+                                findings_list.append(report_finding(readable_snippet, filepath, line_num, "B709_HARDCODED_PQC_SK"))
                             else:
-                                findings_list.append(report_finding(node, filepath, line_num, "B702_HARDCODED_KEY"))
-                        # === [B710] Salt 長度檢查 (重點整合) ===
-                        # 偵測模式: byte[] salt = new byte[8]; 或 byte[] salt = {1,2,...};
+                                findings_list.append(report_finding(readable_snippet, filepath, line_num, "B702_HARDCODED_KEY"))
+                
+                # [Salt 長度檢查]
                 if 'salt' in var_name and declarator.initializer:
                     init = declarator.initializer
+                    readable_snippet = f"byte[] {declarator.name} = new byte[...]"
                     salt_size = None
-                    
-                    # 情況 A: new byte[N] (ArrayCreator)
-                    if isinstance(init, javalang.tree.ArrayCreator):
-                        # 檢查維度定義 (例如 [8])
-                        if init.dimensions and isinstance(init.dimensions[0], javalang.tree.Literal):
-                            if init.dimensions[0].value.isdigit():
-                                salt_size = int(init.dimensions[0].value)
-                    
-                    # 情況 B: { 0x01, 0x02, ... } (ArrayInitializer)
+                        
+                    if isinstance(init, javalang.tree.ArrayCreator) and init.dimensions and init.dimensions[0].value.isdigit():
+                        salt_size = int(init.dimensions[0].value)
                     elif isinstance(init, javalang.tree.ArrayInitializer):
-                        if init.initializers:
-                            salt_size = len(init.initializers)
-
-                    # 判斷是否過短 (< 16 bytes)
+                        if init.initializers: salt_size = len(init.initializers)
+                        
                     if salt_size is not None and salt_size < 16:
-                        findings_list.append(report_finding(node, filepath, line_num, "B710_SHORT_SALT"))
+                        findings_list.append(report_finding(readable_snippet, filepath, line_num, "B710_SHORT_SALT"))
 
+        # 3. 類別創建檢查 (ClassCreator)
         elif isinstance(node, javalang.tree.ClassCreator):
             type_name = node.type.name
-            line_num = node.position.line if node.position else 0
             
-            # [B701] 弱亂數
+            # [弱亂數]
             if type_name == 'Random':
-                 findings_list.append(report_finding(node, filepath, line_num, "B701_WEAK_RNG"))
+                 readable_snippet = "new Random()"
+                 findings_list.append(report_finding(readable_snippet, filepath, line_num, "B701_WEAK_RNG"))
 
-            # [B703] PBKDF2 迭代次數檢查
-            # Java: new PBEKeySpec(chars, salt, iterations, keyLength)
+            # [PBKDF2 迭代次數]
             elif "PBEKeySpec" in type_name and len(node.arguments) >= 3:
-                # 假設第三個參數 (index 2) 是迭代次數
                 iter_arg = node.arguments[2]
                 if isinstance(iter_arg, javalang.tree.Literal) and iter_arg.value.isdigit():
                     iterations = int(iter_arg.value)
                     if iterations < 600000:
-                        findings_list.append(report_finding(node, filepath, line_num, "B703_WEAK_KDF_ITERATIONS"))
+                        readable_snippet = f"new {type_name}(..., {iterations}, ...)"
+                        findings_list.append(report_finding(readable_snippet, filepath, line_num, "B703_WEAK_KDF_ITERATIONS"))
 
-            # [B415] ECC 曲線檢查
-            # Java: new ECGenParameterSpec("secp192r1")
+            # [ECC 曲線檢查]
             elif "ECGenParameterSpec" in type_name and len(node.arguments) > 0:
                 curve_arg = node.arguments[0]
                 if isinstance(curve_arg, javalang.tree.Literal):
                     curve_name = curve_arg.value.strip('"').upper()
+                    readable_snippet = f"new {type_name}(\"{curve_name}\")"
+                    
                     if any(w in curve_name for w in ['SECP192', 'SECT163', 'BRAINPOOLP160']):
-                        findings_list.append(report_finding(node, filepath, line_num, "B415_ECC_WEAK_CURVE"))
+                        findings_list.append(report_finding(readable_snippet, filepath, line_num, "B415_ECC_WEAK_CURVE"))
 
-            # [B416] GCM Nonce 長度檢查
-            # Java: new GCMParameterSpec(tLen, iv)
-            # 這裡比較難直接檢查 IV 長度，除非 IV 是直接 new byte[16]
-            # 我們檢查第二個參數是否為 new byte[16] (ArrayCreator)
+            # [GCM Nonce 長度檢查]
             elif "GCMParameterSpec" in type_name and len(node.arguments) >= 2:
                 iv_arg = node.arguments[1]
+                readable_snippet = f"new GCMParameterSpec(...)"
                 if isinstance(iv_arg, javalang.tree.ArrayCreator):
-                    # 檢查 new byte[16]
                     for dim in iv_arg.dimensions:
                         if isinstance(dim, javalang.tree.Literal) and dim.value.isdigit():
                             size = int(dim.value)
                             if size != 12:
-                                findings_list.append(report_finding(node, filepath, line_num, "B416_GCM_NONCE_LENGTH"))
-        # 4. 字串常數檢查 (全域 PQC 識別)
-        if isinstance(node, javalang.tree.Literal):
+                                findings_list.append(report_finding(readable_snippet, filepath, line_num, "B416_GCM_NONCE_LENGTH"))
+        
+        # 4. 字串常數檢查 (PQC 識別)
+        elif isinstance(node, javalang.tree.Literal):
             val = str(node.value)
             if val.startswith('"'):
                 val_clean = val.strip('"').upper()
-                if "KYBER" in val_clean or "ML-KEM" in val_clean:
-                    findings_list.append(report_finding(node, filepath, node.position.line, "B501_KYBER"))
-                elif "DILITHIUM" in val_clean or "ML-DSA" in val_clean:
-                    findings_list.append(report_finding(node, filepath, node.position.line, "B502_DILITHIUM"))
+                if "KYBER" in val_clean or "ML-KEM" in val_clean or "DILITHIUM" in val_clean or "ML-DSA" in val_clean:
+                    readable_snippet = f"\"{val_clean}\""
+                    if "KYBER" in val_clean or "ML-KEM" in val_clean:
+                        findings_list.append(report_finding(readable_snippet, filepath, line_num, "B501_KYBER"))
+                    elif "DILITHIUM" in val_clean or "ML-DSA" in val_clean:
+                        findings_list.append(report_finding(readable_snippet, filepath, line_num, "B502_DILITHIUM"))
 
     return findings_list
 
